@@ -1,0 +1,40 @@
+#!/bin/bash
+
+PORT=6379
+REPLICATION_FACTOR="$1"
+
+if [ -z "$REPLICATION_FACTOR" ] || [ $REPLICATION_FACTOR -lt 3 ]; then
+    echo "Usage: $0 <replication factor>"
+    echo "Replication factor must be >= 3"
+    exit 1
+fi
+
+echo ">>> Wait for all nodes to come online" >&2
+masters_found=0
+slaves_found=0
+while [ $masters_found -lt $REPLICATION_FACTOR ] || [ $slaves_found -lt $REPLICATION_FACTOR ]; do
+    masters=$(getent hosts tasks.redis-master)
+    masters_found=$(echo "$masters" | wc -l)
+    slaves=$(getent hosts tasks.redis-slave)
+    slaves_found=$(echo "$slaves" | wc -l)
+    sleep 1
+    [ -z "$masters" ] || echo "$masters" >&2
+    [ -z "$slaves" ] || echo "$slaves" >&2
+done
+
+masters=$(echo "$masters" |cut -f1 -d' ' |tr '\n' ' ' |sed "s| |:$PORT |g")
+echo ">>> Join master nodes to cluster: $masters" >&2
+echo "yes\n" | redis-cli --cluster create $masters
+
+slaves=$(echo "$slaves" |cut -f1 -d' ' |tr '\n' ' ' |sed "s| |:$PORT |g")
+echo ">>> Join slave nodes to cluster: $slaves" >&2
+for slave in $slaves; do
+    redis-cli --cluster add-node $slave $(getent hosts tasks.redis-master |head -1 |cut -f1 -d' '):$PORT --cluster-slave
+done
+
+
+while true; do
+    echo ">>> Cluster nodes"
+    redis-cli -h $(getent hosts tasks.redis-master |head -1 |cut -f1 -d' ') -p $PORT cluster nodes
+    sleep 60
+done

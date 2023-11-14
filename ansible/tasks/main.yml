@@ -1,0 +1,12 @@
+---
+- name: 'Check mandatory variables are defined'
+  assert:
+    that:
+      - redis_version != ""
+      - redis_overlay_network != ""
+      - docker_redis_config_location != ""
+      - docker_redis_conf_template != ""
+      - docker_redis_cluster_initiator_template != ""
+
+- name: Include Redis tasks
+  include_tasks: redis.yml

@@ -1,0 +1,17 @@
+---
+# defaults file for redis-cluster
+
+# ==== Docker
+docker_mtu: 1500
+
+# ==== Redis
+redis_version: "7.2.3"
+redis_overlay_network: "10.16.0.0/24"
+redis_replication_factor: 
+redis_master_hosts: 
+redis_slave_hosts: 
+
+# ==== Internal
+docker_redis_config_location: "/opt/redis/"
+docker_redis_conf_template: "templates/redis.conf.j2"
+docker_redis_cluster_initiator_template: "templates/cluster-initiator.sh.j2"

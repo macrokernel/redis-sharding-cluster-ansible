@@ -1,0 +1,168 @@
+---
+- name: Create redis network
+  community.docker.docker_network:
+    name: redis
+    driver: overlay
+    attachable: true
+    driver_options:
+      com.docker.network.driver.mtu: "{{ docker_mtu | default(1500) }}"
+    ipam_config:
+      - subnet: "{{ redis_overlay_network }}"
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+
+- name: Label docker swarm nodes for redis-master
+  community.docker.docker_node:
+    hostname: "{{ item }}"
+    labels:
+      redis-master: 'true'
+  with_items: "{{ redis_master_hosts }}"
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+- name: Label docker swarm nodes for redis-slave
+  community.docker.docker_node:
+    hostname: "{{ item }}"
+    labels:
+      redis-slave: 'true'
+  with_items: "{{ redis_slave_hosts }}"
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+- name: Label docker swarm nodes for redis-cluster-initiator
+  community.docker.docker_node:
+    hostname: "{{ item }}"
+    labels:
+      redis-cluster-initiator: 'true'
+  with_items: 
+    - "{{ redis_master_hosts }}"
+    - "{{ redis_slave_hosts }}"
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+
+
+- name: Create {{ docker_redis_config_location }} directory
+  file:
+    path: "{{ docker_redis_config_location }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Template and copy over redis.conf
+  template:
+    src: "{{ docker_redis_conf_template }}"
+    dest: "{{ docker_redis_config_location }}/redis.conf"
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Template and copy over cluster-initiator.sh
+  template:
+    src: "{{ docker_redis_cluster_initiator_template }}"
+    dest: "{{ docker_redis_config_location }}/cluster-initiator.sh"
+    owner: root
+    group: root
+    mode: 0755
+
+
+- name: Remove docker swarm services if existing
+  community.docker.docker_swarm_service:
+    name: "{{ item }}"
+    state: absent
+  with_items:
+    - redis-cluster-initiator
+    - redis-slave
+    - redis-master
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+
+- name: Create redis master service
+  community.docker.docker_swarm_service:
+    name: "redis-master"
+    image: "redis:{{ redis_version }}"
+    command: redis-server
+    args:
+      - /usr/local/etc/redis/redis.conf
+    hostname: redis-master-{{ '{{' }}.Task.Slot{{ '}}' }}  #'
+    networks:
+      - name: redis
+    dns_search: redis
+    endpoint_mode: dnsrr
+    mounts:
+      - source: "{{ docker_redis_config_location }}/redis.conf"
+        target: /usr/local/etc/redis/redis.conf
+        type: bind
+        readonly: true
+    replicas: "{{ redis_replication_factor | default(redis_master_hosts | length) }}"
+    placement:
+      replicas_max_per_node: 1
+      constraints: [ node.labels.redis-master == true ]
+    restart_config:
+      condition: on-failure
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+- name: Create redis slave service
+  community.docker.docker_swarm_service:
+    name: "redis-slave"
+    image: "redis:{{ redis_version }}"
+    command: redis-server
+    args:
+      - /usr/local/etc/redis/redis.conf
+    hostname: redis-slave-{{ '{{' }}.Task.Slot{{ '}}' }}  #'
+    networks:
+      - name: redis
+    dns_search: redis
+    endpoint_mode: dnsrr
+    mounts:
+      - source: "{{ docker_redis_config_location }}/redis.conf"
+        target: /usr/local/etc/redis/redis.conf
+        type: bind
+        readonly: true
+    replicas: "{{ redis_replication_factor | default (redis_slave_hosts | length) }}"
+    placement:
+      replicas_max_per_node: 1
+      constraints: [ node.labels.redis-slave == true ]
+    restart_config:
+      condition: on-failure
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+  delegate_to: compose-server-manager-1
+  run_once: true
+
+- name: Create redis cluster-initiator service
+  community.docker.docker_swarm_service:
+    name: "redis-cluster-initiator"
+    image: "redis:{{ redis_version }}"
+    command: /bin/bash
+    args:
+      - "/usr/local/bin/cluster-initiator.sh"
+      - "{{ redis_replication_factor }}"
+    hostname: redis-cluster-initiator-{{ '{{' }}.Task.Slot{{ '}}' }}  #'
+    networks:
+      - name: redis
+    dns_search: redis
+    endpoint_mode: dnsrr
+    mounts:
+      - source: "{{ docker_redis_config_location }}/redis.conf"
+        target: /usr/local/etc/redis/redis.conf
+        type: bind
+        readonly: true
+      - source: "{{ docker_redis_config_location }}/cluster-initiator.sh"
+        target: /usr/local/bin/cluster-initiator.sh
+        type: bind
+        readonly: true
+    replicas: 1
+    placement:
+      replicas_max_per_node: 1
+      constraints: [ node.labels.redis-cluster-initiator == true ]
+    restart_config:
+      condition: on-failure
+  delegate_to: compose-server-manager-1
+  run_once: true
